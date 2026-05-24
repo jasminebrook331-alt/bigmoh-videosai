@@ -4,7 +4,7 @@ import { createClient } from "https://cdn.skypack.dev/@supabase/supabase-js";
 
 const SUPABASE_URL = "https://vjpdqkrqrsynhsubotxt.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZqcGRxa3JxcnN5bmhzdWJvdHh0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk0Mzk1OTksImV4cCI6MjA5NTAxNTU5OX0.SyGYE8OKjyQAXTjzZyYJXuZs0BG-li30axkMgiY-DAE";
-const HF_TOKEN = "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";
+const HF_TOKEN = import.meta.env.VITE_HF_TOKEN || "";
 const HF_MODEL = "https://api-inference.huggingface.co/models/damo-vilab/text-to-video-ms-1.7b";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
