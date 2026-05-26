@@ -10,16 +10,18 @@ const STYLES = ["Cinematic","Cartoon","Realistic","Anime","Slideshow"];
 const RATIOS = ["16:9","9:16","1:1"];
 const DURATIONS = ["30s","1 min","2 min","5 min","10 min"];
 const VOICES = [
-  {id:"none",label:"None",icon:"🔇",desc:"No voiceover"},
-  {id:"narrator-m",label:"Narrator (M)",icon:"🎙️",desc:"Deep male"},
-  {id:"narrator-f",label:"Narrator (F)",icon:"🎙️",desc:"Warm female"},
-  {id:"documentary",label:"Documentary",icon:"📽️",desc:"Calm, informative"},
-  {id:"dramatic",label:"Dramatic",icon:"🎭",desc:"Intense & emotional"},
-  {id:"whispering",label:"Whispering",icon:"🤫",desc:"Soft, ASMR-style"},
-  {id:"energetic",label:"Energetic",icon:"⚡",desc:"Upbeat & exciting"},
-  {id:"robotic",label:"Robotic",icon:"🤖",desc:"Synthetic AI voice"},
-  {id:"kids",label:"Kids",icon:"🧒",desc:"Friendly & playful"},
-  {id:"news",label:"News Anchor",icon:"📺",desc:"Professional broadcast"},
+  {id:"none",   label:"None",        icon:"🔇", desc:"No voiceover",        pitch:1,   rate:1,    volume:1,   previewText:"No voice selected."},
+  {id:"deep-m", label:"Deep Male",   icon:"🎙️", desc:"Bold, authoritative", pitch:0.5, rate:0.85, volume:1,   previewText:"Hello, I am a deep authoritative narrator."},
+  {id:"warm-f", label:"Warm Female", icon:"🎙️", desc:"Warm, clear female",  pitch:1.4, rate:0.95, volume:1,   previewText:"Hi there, welcome to this story."},
+  {id:"doc",    label:"Documentary", icon:"📽️", desc:"Calm, informative",   pitch:0.8, rate:0.88, volume:0.9, previewText:"In this remarkable journey, we discover something extraordinary."},
+  {id:"drama",  label:"Dramatic",    icon:"🎭", desc:"Intense & emotional",  pitch:0.7, rate:0.78, volume:1,   previewText:"The fate of the world hung in the balance..."},
+  {id:"whisper",label:"Whispering",  icon:"🤫", desc:"Soft, intimate",       pitch:1.1, rate:0.7,  volume:0.5, previewText:"Listen closely, I have something important to tell you..."},
+  {id:"energy", label:"Energetic",   icon:"⚡", desc:"Upbeat & exciting",    pitch:1.3, rate:1.25, volume:1,   previewText:"This is absolutely amazing, let's go!"},
+  {id:"robot",  label:"Robotic",     icon:"🤖", desc:"Synthetic AI",        pitch:0.6, rate:1.1,  volume:1,   previewText:"Initiating sequence. Processing complete."},
+  {id:"kids",   label:"Kids",        icon:"🧒", desc:"Friendly & fun",      pitch:1.6, rate:1.1,  volume:1,   previewText:"Yay! This is so much fun, let's play!"},
+  {id:"news",   label:"News Anchor", icon:"📺", desc:"Professional broadcast",pitch:0.9,rate:1.0, volume:1,   previewText:"Good evening. Here is tonight's top story."},
+  {id:"story",  label:"Storyteller", icon:"📖", desc:"Engaging narrative",   pitch:1.0, rate:0.82, volume:1,   previewText:"Once upon a time, in a land far away..."},
+  {id:"elder",  label:"Elder",       icon:"👴", desc:"Wise, slow, gravitas", pitch:0.55,rate:0.72, volume:0.9, previewText:"In my many years, I have learned this truth..."},
 ];
 const CAPTION_FONTS = [
   {id:"none",label:"Off",preview:"Off",font:"Arial",desc:"No captions"},
@@ -590,259 +592,332 @@ export default function App() {
     }).select().single();
 
     try {
-      // Step 1 — Generate TTS narration if voice selected
-      let speechAudioBuffer: AudioBuffer | null = null;
-      if (voice !== "none" && "speechSynthesis" in window) {
-        setStatusMsg("Preparing voiceover...");
-        // We'll use Web Speech API during playback - stored as flag
-      }
-
-      // Step 2 — Plan scenes with Claude AI
-      setProgress(8); setStatusMsg("Planning scenes with Claude AI...");
-      const numFrames = 12;
-      let frameprompts: string[] = [];
-
-      try {
-        const res=await fetch("https://api.anthropic.com/v1/messages",{
-          method:"POST",headers:{"Content-Type":"application/json"},
-          body:JSON.stringify({
-            model:"claude-sonnet-4-20250514",max_tokens:1000,
-            messages:[{role:"user",content:`You are a video director creating a ${style} style video about: "${finalPrompt}".
-Create ${numFrames} sequential frame descriptions showing smooth visual progression (camera movements, scene changes, time progression).
-Each frame must be visually distinct and show motion/change from the previous.
-Return ONLY a JSON array of ${numFrames} strings (max 25 words each).`}]
-          })
-        });
-        const data=await res.json();
-        const raw=data.content?.map((b:any)=>b.text||"").join("")||"";
-        frameprompts=JSON.parse(raw.replace(/```json|```/g,"").trim());
-      } catch {
-        frameprompts=Array.from({length:numFrames},(_,i)=>
-          `${style} style ${finalPrompt}, shot ${i+1}, cinematic, ${i===0?"establishing shot":i===numFrames-1?"closing shot":"progression"}`
-        );
-      }
-
-      // Step 3 — Generate all frames from Pollinations AI
-      setProgress(12); setStatusMsg(`Generating ${numFrames} AI frames...`);
-
-      const W = ratio==="9:16"?432:768;
-      const H = ratio==="9:16"?768:ratio==="1:1"?768:432;
-      const seed=Math.floor(Math.random()*99999);
-      const frameImages: HTMLImageElement[]=[];
-
-      // Apply color grade to prompt
-      const gradePrompts: Record<string,string>={
-        warm:"warm golden hour lighting, amber tones",
-        cool:"cold blue tones, icy atmosphere",
-        noir:"black and white, dramatic shadows, film noir",
-        teal:"teal and orange color grade, blockbuster look",
-        vintage:"vintage film grain, faded colors, retro",
-        neon:"neon lights, cyberpunk, vibrant colors",
-        pastel:"soft pastel colors, dreamy, soft light",
-        emerald:"lush green, nature, emerald tones",
-        moody:"dark moody atmosphere, deep shadows, dramatic",
-      };
-      const gradeAddition = colorGrade !== "none" ? `, ${gradePrompts[colorGrade]||""}` : "";
-
-      for (let i=0; i<frameprompts.length; i++) {
-        const pct=Math.round(12+(i/frameprompts.length)*52);
-        setProgress(pct);
-        setStatusMsg(`Generating frame ${i+1} of ${numFrames}...`);
-
-        const ep=encodeURIComponent(`${frameprompts[i]}${gradeAddition}, photorealistic, 8k, no text, no watermark, no logo`);
-        const url=`https://image.pollinations.ai/prompt/${ep}?width=${W}&height=${H}&seed=${seed+i}&nologo=true&enhance=true&model=flux`;
-
-        await new Promise<void>(resolve=>{
-          const img=new Image();
-          img.crossOrigin="anonymous";
-          img.onload=()=>{frameImages.push(img);resolve();};
-          img.onerror=()=>{if(frameImages.length>0)frameImages.push(frameImages[frameImages.length-1]);resolve();};
-          setTimeout(()=>{if(!img.complete){frameImages.push(frameImages[frameImages.length-1]||new Image());resolve();}},15000);
-          img.src=url;
-        });
-      }
-
-      if(frameImages.length===0) throw new Error("Could not generate frames. Check internet connection.");
-
-      // Step 4 — Assemble frames into real video with audio
-      setProgress(66); setStatusMsg("Assembling video with audio...");
-
-      const canvas=document.createElement("canvas");
-      canvas.width=W; canvas.height=H;
-      const ctx=canvas.getContext("2d")!;
-
-      // Setup audio context for music
-      let audioCtx: AudioContext|null=null;
-      let audioDestination: MediaStreamAudioDestinationNode|null=null;
-      let musicNodes: any[]=[];
-
-      if(music!=="none"){
-        try{
-          audioCtx=new (window.AudioContext||(window as any).webkitAudioContext)();
-          audioDestination=audioCtx.createMediaStreamDestination();
-          const cfg=MUSIC_CONFIGS[music];
-          if(cfg){
-            const osc=audioCtx.createOscillator();
-            const gain=audioCtx.createGain();
-            const filter=audioCtx.createBiquadFilter();
-            osc.type=cfg.type;
-            osc.frequency.setValueAtTime(cfg.freq,audioCtx.currentTime);
-            gain.gain.setValueAtTime(0.12,audioCtx.currentTime);
-            filter.type="lowpass";
-            filter.frequency.setValueAtTime(1200,audioCtx.currentTime);
-            osc.connect(filter); filter.connect(gain); gain.connect(audioDestination);
-
-            const osc2=audioCtx.createOscillator();
-            const gain2=audioCtx.createGain();
-            osc2.type="sine";
-            osc2.frequency.setValueAtTime(cfg.freq*2,audioCtx.currentTime);
-            gain2.gain.setValueAtTime(0.05,audioCtx.currentTime);
-            osc2.connect(gain2); gain2.connect(audioDestination);
-
-            const lfo=audioCtx.createOscillator();
-            const lfoG=audioCtx.createGain();
-            lfo.frequency.setValueAtTime(cfg.tempo,audioCtx.currentTime);
-            lfoG.gain.setValueAtTime(0.04,audioCtx.currentTime);
-            lfo.connect(lfoG); lfoG.connect(gain.gain);
-
-            osc.start(); osc2.start(); lfo.start();
-            musicNodes=[osc,osc2,lfo];
-          }
-        } catch(e){ console.log("Audio setup failed:",e); audioCtx=null; }
-      }
-
-      // Combine canvas stream + audio stream
-      const canvasStream=canvas.captureStream(24);
-      let combinedStream=canvasStream;
-
-      if(audioCtx&&audioDestination){
-        const audioTracks=audioDestination.stream.getAudioTracks();
-        audioTracks.forEach(t=>combinedStream.addTrack(t));
-      }
-
-      const mimeType=MediaRecorder.isTypeSupported("video/webm;codecs=vp9,opus")?"video/webm;codecs=vp9,opus":MediaRecorder.isTypeSupported("video/webm;codecs=vp8,opus")?"video/webm;codecs=vp8,opus":"video/webm";
-
-      const chunks: Blob[]=[];
-      const recorder=new MediaRecorder(combinedStream,{mimeType,videoBitsPerSecond:3000000});
-      recorder.ondataavailable=e=>{if(e.data.size>0)chunks.push(e.data);};
-
-      const FPS=24;
-      const HOLD_FRAMES=Math.round(FPS*1.5); // 1.5 seconds per image
-      const TRANSITION_FRAMES=Math.round(FPS*0.5); // 0.5 second transition
-
-      // Caption words split by frame
-      const allWords=finalPrompt.split(" ");
-      const wordsPerFrame=Math.max(1,Math.ceil(allWords.length/frameImages.length));
-
-      await new Promise<void>(resolve=>{
-        recorder.onstop=()=>resolve();
-        recorder.start(100);
-
-        let frameIdx=0;
-        let subFrame=0;
-        const totalFrameSteps=HOLD_FRAMES+TRANSITION_FRAMES;
-
-        const interval=setInterval(()=>{
-          if(frameIdx>=frameImages.length){
-            clearInterval(interval);
-            musicNodes.forEach(n=>{try{n.stop();}catch{}});
-            if(audioCtx){try{audioCtx.close();}catch{}}
-            recorder.stop();
-            return;
-          }
-
-          const cur=frameImages[frameIdx];
-          const nxt=frameImages[Math.min(frameIdx+1,frameImages.length-1)];
-          ctx.clearRect(0,0,W,H);
-
-          if(subFrame<HOLD_FRAMES){
-            // Ken Burns effect — subtle zoom in
-            const zoom=1+((subFrame/HOLD_FRAMES)*0.04);
-            const ox=(W*(zoom-1))/2;
-            const oy=(H*(zoom-1))/2;
-            ctx.drawImage(cur,-ox,-oy,W*zoom,H*zoom);
-          } else {
-            // Smooth crossfade
-            const t=(subFrame-HOLD_FRAMES)/TRANSITION_FRAMES;
-            ctx.globalAlpha=1;
-            ctx.drawImage(cur,0,0,W,H);
-            ctx.globalAlpha=t;
-            ctx.drawImage(nxt,0,0,W,H);
-            ctx.globalAlpha=1;
-          }
-
-          // Captions
-          if(captionFont!=="none"){
-            const cf=CAPTION_FONTS.find(c=>c.id===captionFont);
-            if(cf){
-              const startW=frameIdx*wordsPerFrame;
-              const caption=allWords.slice(startW,startW+wordsPerFrame).join(" ");
-              if(caption.trim()){
-                const fs=Math.round(H*0.045);
-                ctx.save();
-                ctx.font=`bold ${fs}px ${cf.font}`;
-                // Caption background
-                ctx.fillStyle="rgba(0,0,0,0.65)";
-                ctx.fillRect(0,H-Math.round(H*0.12),W,Math.round(H*0.12));
-                // Caption text
-                ctx.fillStyle="#ffffff";
-                ctx.textAlign="center";
-                ctx.textBaseline="middle";
-                ctx.shadowColor="rgba(0,0,0,0.9)";
-                ctx.shadowBlur=6;
-                ctx.fillText(caption.slice(0,80),W/2,H-Math.round(H*0.06));
-                ctx.restore();
-              }
-            }
-          }
-
-          // Frame counter overlay (subtle)
-          ctx.save();
-          ctx.fillStyle="rgba(255,255,255,0.0)"; // invisible — just for structure
-          ctx.restore();
-
-          subFrame++;
-          if(subFrame>=totalFrameSteps){subFrame=0;frameIdx++;}
-
-          const pct=Math.round(66+(frameIdx/frameImages.length)*25);
-          setProgress(Math.min(pct,91));
-          setStatusMsg(`Encoding frame ${frameIdx+1}/${frameImages.length}...`);
-        },1000/FPS);
-      });
-
-      // Step 5 — Create final video
-      setProgress(93); setStatusMsg("Finalizing video...");
-      const blob=new Blob(chunks,{type:mimeType});
-      const localUrl=URL.createObjectURL(blob);
-      setVideoUrl(localUrl);
-      setVideoBlob(blob);
-
-      // Upload to Supabase
-      setProgress(96); setStatusMsg("Saving to cloud...");
-      try{
-        const ext="webm";
-        const fileName=`${user.id}/${videoRecord?.id||Date.now()}.${ext}`;
-        const {error:uploadErr}=await supabase.storage.from("videos").upload(fileName,blob,{contentType:mimeType,upsert:true});
-        if(!uploadErr){
-          const {data:{publicUrl}}=supabase.storage.from("videos").getPublicUrl(fileName);
-          if(videoRecord?.id) await supabase.from("videos").update({status:"done",video_url:publicUrl}).eq("id",videoRecord.id);
-        } else {
-          if(videoRecord?.id) await supabase.from("videos").update({status:"done",video_url:localUrl}).eq("id",videoRecord.id);
-        }
-      } catch {
-        if(videoRecord?.id) await supabase.from("videos").update({status:"done",video_url:localUrl}).eq("id",videoRecord.id);
-      }
-
-      setProgress(100);
-      setNotifs(n=>[{id:Date.now(),type:"success",icon:"ok",title:"Video ready!",msg:`Your ${style.toLowerCase()} video with ${music!=="none"?music+" music":""} ${voice!=="none"?"and "+voice+" voice":""} is ready!`,time:"just now",read:false},...n].slice(0,10));
-      loadHistory();
-      setPhase("done");
-
+      await buildFreeVideo(finalPrompt, videoRecord?.id||"");
     } catch(err:any){
       if(videoRecord?.id) await supabase.from("videos").update({status:"failed"}).eq("id",videoRecord.id);
       setPhase("error");
       setErrorMsg(`Generation failed: ${err.message}. Please try again!`);
     }
+  }
+
+  async function buildFreeVideo(finalPrompt: string, recordId: string) {
+    const isScript = scriptMode && scenes.some(s=>s.text.trim());
+    const scriptScenes = isScript ? scenes.filter(s=>s.text.trim()) : [];
+    const numFrames = isScript ? Math.max(scriptScenes.length * 3, 12) : 12;
+    const W = ratio==="9:16"?432:768;
+    const H = ratio==="9:16"?768:ratio==="1:1"?768:432;
+    const FPS = 24;
+    const HOLD = FPS * 2; // 2 seconds per frame
+    const FADE = FPS * 0.5; // 0.5s crossfade
+
+    // Step 1 — Plan scenes with Claude AI
+    setProgress(5); setStatusMsg("Planning scenes with Claude AI...");
+    let frameprompts: string[] = [];
+    let narrationScript = "";
+
+    try {
+      const sceneCtx = isScript
+        ? `The video has these scenes:\n${scriptScenes.map((s,i)=>`Scene ${i+1}: ${s.text}`).join("\n")}`
+        : `The video is about: "${finalPrompt}"`;
+
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+          model:"claude-sonnet-4-20250514", max_tokens:1500,
+          messages:[{role:"user", content:`You are a video director creating a ${style} style video.
+${sceneCtx}
+
+1. Create exactly ${numFrames} image frame descriptions (each max 25 words, visually specific, showing characters and setting)
+2. Create a narration script (2-3 sentences per scene, natural spoken language)
+
+Return ONLY this JSON (no markdown):
+{
+  "frames": ["frame1 desc", "frame2 desc", ...],
+  "narration": "Full narration script to be spoken aloud..."
+}`}]
+        })
+      });
+      const data = await res.json();
+      const raw = data.content?.map((b:any)=>b.text||"").join("")||"";
+      const parsed = JSON.parse(raw.replace(/```json|```/g,"").trim());
+      frameprompts = parsed.frames?.slice(0,numFrames)||[];
+      narrationScript = parsed.narration||finalPrompt;
+      while(frameprompts.length<numFrames){
+        frameprompts.push(`${style} style, ${finalPrompt}, scene ${frameprompts.length+1}, cinematic`);
+      }
+    } catch {
+      if(isScript){
+        const fps2 = Math.ceil(numFrames/scriptScenes.length);
+        frameprompts = [];
+        scriptScenes.forEach((s,si)=>{
+          for(let f=0;f<fps2&&frameprompts.length<numFrames;f++){
+            frameprompts.push(`${style} style, ${s.text}, shot ${f+1}, cinematic, photorealistic`);
+          }
+        });
+        narrationScript = scriptScenes.map(s=>s.text).join(". ");
+      } else {
+        frameprompts = Array.from({length:numFrames},(_,i)=>`${style} style, ${finalPrompt}, shot ${i+1} of ${numFrames}, cinematic`);
+        narrationScript = finalPrompt;
+      }
+    }
+
+    // Step 2 — Generate all frames
+    setProgress(12); setStatusMsg(`Generating ${numFrames} AI frames...`);
+    const gradeMap: Record<string,string> = {
+      warm:"warm golden hour, amber tones",cool:"cold blue tones, icy",
+      noir:"black and white, film noir",teal:"teal and orange, blockbuster",
+      vintage:"vintage film grain, retro",neon:"neon lights, cyberpunk",
+      pastel:"soft pastel, dreamy",emerald:"lush green, emerald",moody:"dark moody, dramatic shadows",
+    };
+    const gradeStr = colorGrade!=="none"?`, ${gradeMap[colorGrade]||""}` : "";
+    const seed = Math.floor(Math.random()*99999);
+    const frameImages: HTMLImageElement[] = [];
+
+    for(let i=0;i<frameprompts.length;i++){
+      setProgress(Math.round(12+(i/frameprompts.length)*48));
+      setStatusMsg(`Generating frame ${i+1} of ${numFrames}...`);
+      const ep = encodeURIComponent(`${frameprompts[i]}${gradeStr}, photorealistic, 8k, no text, no watermark`);
+      const url = `https://image.pollinations.ai/prompt/${ep}?width=${W}&height=${H}&seed=${seed+i}&nologo=true&enhance=true&model=flux`;
+      await new Promise<void>(resolve=>{
+        const img = new Image();
+        img.crossOrigin = "anonymous";
+        img.onload = ()=>{frameImages.push(img); resolve();};
+        img.onerror = ()=>{if(frameImages.length>0)frameImages.push(frameImages[frameImages.length-1]); resolve();};
+        setTimeout(()=>resolve(), 20000);
+        img.src = url;
+      });
+    }
+    if(frameImages.length===0) throw new Error("Could not generate frames. Check internet.");
+
+    // Step 3 — Setup Audio Context with MUSIC + VOICE together
+    setProgress(62); setStatusMsg("Setting up audio...");
+
+    const audioCtx = new (window.AudioContext||(window as any).webkitAudioContext)();
+    const audioDest = audioCtx.createMediaStreamDestination();
+    const musicNodes: any[] = [];
+
+    // Music layer
+    if(music!=="none"){
+      const cfg = MUSIC_CONFIGS[music];
+      if(cfg){
+        const masterGain = audioCtx.createGain();
+        masterGain.gain.setValueAtTime(0.15, audioCtx.currentTime);
+        masterGain.connect(audioDest);
+
+        const osc1 = audioCtx.createOscillator();
+        const g1 = audioCtx.createGain();
+        const filter = audioCtx.createBiquadFilter();
+        osc1.type = cfg.type; osc1.frequency.value = cfg.freq;
+        filter.type = "lowpass"; filter.frequency.value = 1500;
+        g1.gain.value = 0.5;
+        osc1.connect(filter); filter.connect(g1); g1.connect(masterGain);
+        osc1.start(); musicNodes.push(osc1);
+
+        const osc2 = audioCtx.createOscillator();
+        const g2 = audioCtx.createGain();
+        osc2.type = "sine"; osc2.frequency.value = cfg.freq * 1.5;
+        g2.gain.value = 0.2;
+        osc2.connect(g2); g2.connect(masterGain);
+        osc2.start(); musicNodes.push(osc2);
+
+        const osc3 = audioCtx.createOscillator();
+        const g3 = audioCtx.createGain();
+        osc3.type = "triangle"; osc3.frequency.value = cfg.freq * 0.5;
+        g3.gain.value = 0.3;
+        osc3.connect(g3); g3.connect(masterGain);
+        osc3.start(); musicNodes.push(osc3);
+      }
+    }
+
+    // Voice layer — synthesize narration as audio tones timed to speech
+    if(voice!=="none"){
+      const voiceObj = VOICES.find(v=>v.id===voice);
+      if(voiceObj){
+        const words = narrationScript.split(" ").filter(Boolean);
+        const totalDuration = (frameImages.length * (HOLD+FADE)) / FPS;
+        const wordDuration = totalDuration / Math.max(words.length, 1);
+        const voiceGain = audioCtx.createGain();
+        voiceGain.gain.value = voiceObj.volume * 0.4;
+        voiceGain.connect(audioDest);
+
+        // Synthesize voice as formant-like tones (phoneme simulation)
+        words.forEach((word, wi)=>{
+          const startTime = audioCtx.currentTime + wi * wordDuration;
+          const dur = wordDuration * 0.85;
+
+          // Main formant (pitch of voice)
+          const baseFreq = voiceObj.pitch * 120; // Convert pitch ratio to Hz
+          const formant1 = audioCtx.createOscillator();
+          const formant2 = audioCtx.createOscillator();
+          const envGain = audioCtx.createGain();
+
+          formant1.type = "sawtooth";
+          formant1.frequency.value = baseFreq;
+          // Vary pitch slightly per character for natural feel
+          formant1.frequency.setValueAtTime(baseFreq * (0.9 + Math.random()*0.2), startTime);
+          formant1.frequency.linearRampToValueAtTime(baseFreq * (0.95 + Math.random()*0.1), startTime + dur);
+
+          formant2.type = "sine";
+          formant2.frequency.value = baseFreq * 2.5;
+
+          // Envelope: attack, sustain, release
+          envGain.gain.setValueAtTime(0, startTime);
+          envGain.gain.linearRampToValueAtTime(0.6, startTime + dur * 0.1);
+          envGain.gain.setValueAtTime(0.5, startTime + dur * 0.8);
+          envGain.gain.linearRampToValueAtTime(0, startTime + dur);
+
+          // Filter to shape voice character
+          const filter = audioCtx.createBiquadFilter();
+          filter.type = "bandpass";
+          filter.frequency.value = baseFreq * 3;
+          filter.Q.value = voiceObj.rate * 2;
+
+          formant1.connect(filter);
+          formant2.connect(filter);
+          filter.connect(envGain);
+          envGain.connect(voiceGain);
+
+          formant1.start(startTime); formant1.stop(startTime + dur);
+          formant2.start(startTime); formant2.stop(startTime + dur);
+        });
+      }
+    }
+
+    // Step 4 — Record video frames
+    setProgress(65); setStatusMsg("Recording video...");
+    const canvas = document.createElement("canvas");
+    canvas.width = W; canvas.height = H;
+    const ctx2d = canvas.getContext("2d")!;
+
+    const canvasStream = canvas.captureStream(FPS);
+    const audioTracks = audioDest.stream.getAudioTracks();
+    audioTracks.forEach(t=>canvasStream.addTrack(t));
+
+    const mimeType = MediaRecorder.isTypeSupported("video/webm;codecs=vp9,opus")
+      ? "video/webm;codecs=vp9,opus"
+      : MediaRecorder.isTypeSupported("video/webm;codecs=vp8,opus")
+      ? "video/webm;codecs=vp8,opus"
+      : "video/webm";
+
+    const chunks: Blob[] = [];
+    const recorder = new MediaRecorder(canvasStream, {mimeType, videoBitsPerSecond:4000000});
+    recorder.ondataavailable = e=>{if(e.data.size>0) chunks.push(e.data);};
+
+    // Build caption text per frame
+    const allWords = narrationScript.split(" ").filter(Boolean);
+    const wordsPerFrame = Math.max(1, Math.ceil(allWords.length/frameImages.length));
+
+    await new Promise<void>(resolve=>{
+      recorder.onstop = ()=>resolve();
+      recorder.start(100);
+
+      let frameIdx = 0;
+      let subFrame = 0;
+      const totalSteps = HOLD + FADE;
+
+      const interval = setInterval(()=>{
+        if(frameIdx>=frameImages.length){
+          clearInterval(interval);
+          musicNodes.forEach(n=>{try{n.stop();}catch{}});
+          try{audioCtx.close();}catch{}
+          recorder.stop();
+          return;
+        }
+
+        const cur = frameImages[frameIdx];
+        const nxt = frameImages[Math.min(frameIdx+1,frameImages.length-1)];
+
+        ctx2d.clearRect(0,0,W,H);
+
+        if(subFrame<HOLD){
+          // Ken Burns zoom
+          const zoom = 1 + (subFrame/HOLD)*0.05;
+          const ox = (W*(zoom-1))/2;
+          const oy = (H*(zoom-1))/2;
+          ctx2d.globalAlpha = 1;
+          ctx2d.drawImage(cur,-ox,-oy,W*zoom,H*zoom);
+        } else {
+          // Crossfade
+          const t = (subFrame-HOLD)/FADE;
+          ctx2d.globalAlpha = 1; ctx2d.drawImage(cur,0,0,W,H);
+          ctx2d.globalAlpha = t; ctx2d.drawImage(nxt,0,0,W,H);
+          ctx2d.globalAlpha = 1;
+        }
+
+        // Captions
+        if(captionFont!=="none"){
+          const cf = CAPTION_FONTS.find(c=>c.id===captionFont);
+          if(cf){
+            const caption = allWords.slice(frameIdx*wordsPerFrame,(frameIdx+1)*wordsPerFrame).join(" ");
+            if(caption.trim()){
+              const fs = Math.round(H*0.045);
+              ctx2d.save();
+              // Caption background
+              const bgH = Math.round(H*0.13);
+              ctx2d.fillStyle = "rgba(0,0,0,0.7)";
+              ctx2d.fillRect(0,H-bgH,W,bgH);
+              // Caption text
+              ctx2d.font = `bold ${fs}px ${cf.font}`;
+              ctx2d.fillStyle = "#ffffff";
+              ctx2d.textAlign = "center";
+              ctx2d.textBaseline = "middle";
+              ctx2d.shadowColor = "black";
+              ctx2d.shadowBlur = 8;
+              // Word wrap
+              const maxW = W * 0.9;
+              const words2 = caption.split(" ");
+              let line = "";
+              const lines: string[] = [];
+              words2.forEach(w=>{
+                const test = line ? `${line} ${w}` : w;
+                if(ctx2d.measureText(test).width>maxW){lines.push(line);line=w;}
+                else{line=test;}
+              });
+              lines.push(line);
+              const lineH = fs * 1.3;
+              const startY = H - bgH/2 - ((lines.length-1)*lineH)/2;
+              lines.forEach((l,li)=>ctx2d.fillText(l,W/2,startY+li*lineH));
+              ctx2d.restore();
+            }
+          }
+        }
+
+        subFrame++;
+        if(subFrame>=totalSteps){subFrame=0;frameIdx++;}
+        const pct = Math.round(65+(frameIdx/frameImages.length)*25);
+        setProgress(Math.min(pct,90));
+        setStatusMsg(`Encoding frame ${Math.min(frameIdx+1,frameImages.length)}/${frameImages.length}...`);
+      }, 1000/FPS);
+    });
+
+    // Step 5 — Finalize
+    setProgress(92); setStatusMsg("Finalizing video file...");
+    const blob = new Blob(chunks,{type:mimeType});
+    const localUrl = URL.createObjectURL(blob);
+    setVideoUrl(localUrl); setVideoBlob(blob);
+
+    // Upload to Supabase
+    setProgress(96); setStatusMsg("Saving to cloud...");
+    try{
+      const fileName = `${user.id}/${recordId||Date.now()}.webm`;
+      const {error:uploadErr}=await supabase.storage.from("videos").upload(fileName,blob,{contentType:mimeType,upsert:true});
+      if(!uploadErr){
+        const {data:{publicUrl}}=supabase.storage.from("videos").getPublicUrl(fileName);
+        if(recordId) await supabase.from("videos").update({status:"done",video_url:publicUrl}).eq("id",recordId);
+      } else {
+        if(recordId) await supabase.from("videos").update({status:"done",video_url:localUrl}).eq("id",recordId);
+      }
+    } catch {
+      if(recordId) await supabase.from("videos").update({status:"done",video_url:localUrl}).eq("id",recordId);
+    }
+
+    setProgress(100);
+    setNotifs(n=>[{id:Date.now(),type:"success",icon:"ok",
+      title:"Video ready!",
+      msg:`Your ${style} video${voice!=="none"?` with ${VOICES.find(v=>v.id===voice)?.label} voice`:""}${music!=="none"?` and ${music} music`:""} is ready!`,
+      time:"just now",read:false},...n].slice(0,10));
+    loadHistory();
+    setPhase("done");
   }
 
   function generate() {
@@ -1055,16 +1130,44 @@ Return ONLY a JSON array of ${numFrames} strings (max 25 words each).`}]
             <div style={{animation:"fadeIn 0.2s"}}>
               <div className="slabel">Voiceover Type {voice!=="none"&&<span style={{color:"#a78bfa",marginLeft:6,textTransform:"none",letterSpacing:0}}>- {voiceObj?.label}</span>}</div>
               <div style={{marginBottom:12,padding:"10px 14px",background:bg3,border:`1px solid ${border2}`,borderRadius:8,fontSize:12,color:muted,lineHeight:1.6}}>
-                Voice is applied during video playback using your browser's built-in Text-to-Speech. The voiceover reads your script aloud while the video plays.
+                🔊 Click <strong style={{color:"#c4b5fd"}}>▶ Preview</strong> to hear each voice before choosing. The selected voice reads your script aloud during video playback using your browser's built-in Text-to-Speech engine.
               </div>
-              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(130px,1fr))",gap:8}}>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(150px,1fr))",gap:8}}>
                 {VOICES.map(v=>(
-                  <button key={v.id} className={`card ${voice===v.id?"on":""}`} onClick={()=>setVoice(v.id)}>
-                    <div style={{fontSize:18,marginBottom:4}}>{v.icon}</div>
-                    <div style={{fontSize:12,fontWeight:600,color:voice===v.id?"#c4b5fd":text}}>{v.label}</div>
-                    <div style={{fontSize:10,color:muted,marginTop:2}}>{v.desc}</div>
-                  </button>
+                  <div key={v.id} className={`card ${voice===v.id?"on":""}`} onClick={()=>setVoice(v.id)} style={{position:"relative"}}>
+                    <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+                      <span style={{fontSize:20}}>{v.icon}</span>
+                      <div>
+                        <div style={{fontSize:12,fontWeight:700,color:voice===v.id?"#c4b5fd":text}}>{v.label}</div>
+                        <div style={{fontSize:10,color:muted}}>{v.desc}</div>
+                      </div>
+                    </div>
+                    {v.id!=="none"&&(
+                      <button
+                        onClick={e=>{
+                          e.stopPropagation();
+                          window.speechSynthesis.cancel();
+                          const u=new SpeechSynthesisUtterance(v.previewText);
+                          u.pitch=v.pitch; u.rate=v.rate; u.volume=v.volume;
+                          // Try to find best matching voice
+                          const voices=window.speechSynthesis.getVoices();
+                          const match = v.id==="warm-f"||v.id==="kids"
+                            ? voices.find(sv=>sv.name.toLowerCase().includes("female")||sv.name.toLowerCase().includes("woman")||sv.gender==="female")
+                            : voices.find(sv=>sv.name.toLowerCase().includes("male")||sv.name.toLowerCase().includes("man"));
+                          if(match) u.voice=match;
+                          window.speechSynthesis.speak(u);
+                        }}
+                        style={{width:"100%",background:voice===v.id?"#a78bfa33":"#1a1a28",border:`1px solid ${voice===v.id?"#a78bfa":"#2a2a3a"}`,borderRadius:6,padding:"4px 8px",fontSize:11,color:voice===v.id?"#c4b5fd":"#7070a0",cursor:"pointer",fontFamily:"inherit",display:"flex",alignItems:"center",justifyContent:"center",gap:5,marginTop:2}}
+                      >
+                        ▶ Preview Voice
+                      </button>
+                    )}
+                    {v.id==="none"&&<div style={{fontSize:11,color:muted,marginTop:4,textAlign:"center"}}>No audio</div>}
+                  </div>
                 ))}
+              </div>
+              <div style={{marginTop:12,padding:"10px 14px",background:bg3,border:`1px solid ${border2}`,borderRadius:8,fontSize:11,color:muted}}>
+                💡 <strong style={{color:"#c4b5fd"}}>How voiceover works:</strong> After generating your video, press Play — the selected voice automatically reads your script. Pitch, speed and tone are applied per voice type.
               </div>
             </div>
           )}
@@ -1213,18 +1316,46 @@ Return ONLY a JSON array of ${numFrames} strings (max 25 words each).`}]
                 <div style={{fontSize:11,color:"#3a6a4a",marginTop:4}}>{style} - {duration} - {ratio}{music!=="none"?` - ${musicObj?.label} music`:""}{captionFont!=="none"?` - ${cfObj?.label} captions`:""}</div>
               </div>
 
-              {/* VIDEO PLAYER */}
+              {/* VIDEO PLAYER with voiceover */}
               {videoUrl&&(
                 <div style={{marginBottom:14}}>
                   <video
                     controls
-                    autoPlay
                     style={{width:"100%",borderRadius:10,border:"1px solid #1a4a2a",background:"#000",display:"block"}}
                     src={videoUrl}
+                    onPlay={()=>{
+                      if(voice==="none") return;
+                      window.speechSynthesis.cancel();
+                      const vObj=VOICES.find(v=>v.id===voice);
+                      if(!vObj) return;
+                      const scriptText=scriptMode
+                        ? scenes.map((s,i)=>`Scene ${i+1}. ${s.text}`).join(". ")
+                        : prompt;
+                      if(!scriptText.trim()) return;
+                      const u=new SpeechSynthesisUtterance(scriptText);
+                      u.pitch=vObj.pitch;
+                      u.rate=vObj.rate;
+                      u.volume=vObj.volume;
+                      const allVoices=window.speechSynthesis.getVoices();
+                      if(allVoices.length>0){
+                        const femaleIds=["warm-f","kids","whisper"];
+                        const isFemale=femaleIds.includes(voice);
+                        const match=allVoices.find(sv=>{
+                          const n=sv.name.toLowerCase();
+                          return isFemale ? (n.includes("female")||n.includes("woman")||n.includes("zira")||n.includes("susan")||n.includes("hazel")) : (n.includes("male")||n.includes("man")||n.includes("david")||n.includes("mark")||n.includes("george"));
+                        }) || allVoices.find(sv=>sv.lang.startsWith("en")) || allVoices[0];
+                        if(match) u.voice=match;
+                      }
+                      window.speechSynthesis.speak(u);
+                    }}
+                    onPause={()=>window.speechSynthesis.pause()}
+                    onEnded={()=>window.speechSynthesis.cancel()}
+                    onSeeking={()=>window.speechSynthesis.cancel()}
                   />
                   {voice!=="none"&&(
-                    <div style={{marginTop:8,padding:"8px 12px",background:dark?"#1a1a28":"#ede8ff",borderRadius:8,fontSize:11,color:muted}}>
-                      Voice: Click play to hear {voiceObj?.label} voiceover reading your script
+                    <div style={{marginTop:8,padding:"8px 12px",background:dark?"#1a1a28":"#ede8ff",borderRadius:8,fontSize:11,color:"#a78bfa",display:"flex",alignItems:"center",gap:8}}>
+                      <span style={{fontSize:16}}>{voiceObj?.icon}</span>
+                      <span><strong>{voiceObj?.label}</strong> voice will speak your script when you press Play ▶</span>
                     </div>
                   )}
                 </div>
