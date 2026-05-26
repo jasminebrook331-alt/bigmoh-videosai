@@ -946,7 +946,7 @@ Return ONLY this JSON (no markdown):
   }
 
   // Download video with proper filename
-  function downloadVideo() {
+  async function downloadVideo() {
     if(!videoUrl) return;
     try {
       // Fetch the video as a blob for proper download
