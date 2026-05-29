@@ -603,260 +603,363 @@ export default function App() {
   async function buildFreeVideo(finalPrompt: string, recordId: string) {
     const isScript = scriptMode && scenes.some(s=>s.text.trim());
     const scriptScenes = isScript ? scenes.filter(s=>s.text.trim()) : [];
-    const numFrames = isScript ? Math.max(scriptScenes.length * 3, 12) : 12;
+
     const W = ratio==="9:16"?432:768;
     const H = ratio==="9:16"?768:ratio==="1:1"?768:432;
     const FPS = 24;
-    const HOLD = FPS * 2; // 2 seconds per frame
-    const FADE = FPS * 0.5; // 0.5s crossfade
 
-    // Step 1 — Plan scenes with Claude AI
-    setProgress(5); setStatusMsg("Planning scenes with Claude AI...");
+    // Map duration to seconds
+    const durationSeconds: Record<string,number> = {
+      "30s":30,"1 min":60,"2 min":120,"5 min":300,"10 min":600
+    };
+    const totalSecs = durationSeconds[duration]||60;
+
+    // ── STEP 1: Extract every character/sentence from script ──────
+    setProgress(3); setStatusMsg("Analysing your script...");
+
+    // Parse the full script into individual character lines / sentences
+    let scriptLines: string[] = [];
+
+    if(isScript){
+      // Each scene box = one block, split further by sentences and character dialogue
+      scriptScenes.forEach(sc=>{
+        const text = sc.text.trim();
+        // Split by sentence endings, newlines, or character dialogue markers
+        const sentences = text
+          .split(/(?<=[.!?])\s+|[\n\r]+|(?=\b[A-Z][A-Z\s]+:)/) // split on sentences, newlines, "CHARACTER:" patterns
+          .map(s=>s.trim())
+          .filter(s=>s.length>3);
+        scriptLines.push(...sentences);
+      });
+    } else {
+      // Split prompt into sentences
+      scriptLines = finalPrompt
+        .split(/(?<=[.!?])\s+|[\n\r]+/)
+        .map(s=>s.trim())
+        .filter(s=>s.length>3);
+      if(scriptLines.length===0) scriptLines = [finalPrompt];
+    }
+
+    // Ensure minimum lines
+    if(scriptLines.length===0) scriptLines = [finalPrompt];
+
+    // Calculate seconds per line to fill the full duration
+    const secsPerLine = totalSecs / scriptLines.length;
+    // Frames needed per line (at least 1, show longer lines longer)
+    const HOLD_PER_LINE = Math.max(Math.round(FPS * secsPerLine), FPS * 2); // min 2s per line
+    const FADE = Math.round(FPS * 0.5);
+
+    // Total frames to generate = 1 unique image per script line
+    const numFrames = scriptLines.length;
+
+    setStatusMsg(`Found ${numFrames} script lines — generating ${numFrames} unique images...`);
+
+    // ── STEP 2: Build grade string early (needed in both steps) ──
+    const gradeMap: Record<string,string> = {
+      warm:"warm golden hour, amber tones", cool:"cold blue tones, icy atmosphere",
+      noir:"black and white, film noir", "teal-orange":"teal and orange, blockbuster",
+      vintage:"vintage film grain, faded retro", neon:"neon lights, cyberpunk",
+      pastel:"soft pastel, dreamy light", emerald:"lush green, emerald tones",
+      moody:"dark moody atmosphere, dramatic shadows",
+    };
+    const gradeStr = colorGrade!=="none" ? `, ${gradeMap[colorGrade]||""}` : "";
+
+    // ── STEP 2: Ask Claude to create image prompt for EACH line ───
+    setProgress(6);
     let frameprompts: string[] = [];
     let narrationScript = "";
 
     try {
-      const sceneCtx = isScript
-        ? `The video has these scenes:\n${scriptScenes.map((s,i)=>`Scene ${i+1}: ${s.text}`).join("\n")}`
-        : `The video is about: "${finalPrompt}"`;
-
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
+      const res = await fetch("https://api.anthropic.com/v1/messages",{
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({
-          model:"claude-sonnet-4-20250514", max_tokens:1500,
-          messages:[{role:"user", content:`You are a video director creating a ${style} style video.
-${sceneCtx}
+          model:"claude-sonnet-4-20250514", max_tokens:8000,
+          messages:[{role:"user", content:`You are a professional video director.
 
-1. Create exactly ${numFrames} image frame descriptions (each max 25 words, visually specific, showing characters and setting)
-2. Create a narration script (2-3 sentences per scene, natural spoken language)
+Style: ${style}
+Duration: ${duration}
+Script lines (${numFrames} total — you MUST generate exactly one image description per line, no exceptions):
+${scriptLines.map((l,i)=>`${i+1}. ${l}`).join("\n")}
 
-Return ONLY this JSON (no markdown):
+RULES:
+- Generate EXACTLY ${numFrames} image descriptions, one for each numbered line above
+- Each image description must visually represent what happens in that specific line
+- Show the character(s), their expression, setting, lighting, and action
+- Keep each description under 30 words
+- Make all characters look consistent across all frames
+
+Return ONLY valid JSON (no markdown, no extra text):
 {
-  "frames": ["frame1 desc", "frame2 desc", ...],
-  "narration": "Full narration script to be spoken aloud..."
+  "frames": [exactly ${numFrames} strings, one per script line in order],
+  "narration": "Read the full script naturally as spoken narration",
+  "characters": "Describe main character appearance for visual consistency"
 }`}]
         })
       });
       const data = await res.json();
       const raw = data.content?.map((b:any)=>b.text||"").join("")||"";
-      const parsed = JSON.parse(raw.replace(/```json|```/g,"").trim());
-      frameprompts = parsed.frames?.slice(0,numFrames)||[];
-      narrationScript = parsed.narration||finalPrompt;
-      while(frameprompts.length<numFrames){
-        frameprompts.push(`${style} style, ${finalPrompt}, scene ${frameprompts.length+1}, cinematic`);
+      const cleaned = raw.replace(/```json|```/g,"").trim();
+      // Handle potentially truncated JSON
+      let parsed: any = {};
+      try {
+        parsed = JSON.parse(cleaned);
+      } catch {
+        // Try to extract frames array even from truncated JSON
+        const framesMatch = cleaned.match(/"frames"\s*:\s*\[([^\]]*)\]/s);
+        if(framesMatch){
+          const framesArr = JSON.parse(`[${framesMatch[1]}]`);
+          parsed = { frames: framesArr, narration: scriptLines.join(". ") };
+        } else {
+          throw new Error("Could not parse response");
+        }
       }
+
+      frameprompts = parsed.frames||[];
+      narrationScript = parsed.narration||scriptLines.join(". ");
+      const charDesc = parsed.characters||"";
+
+      // Add character consistency + style to every frame prompt
+      frameprompts = frameprompts.map((f:string)=>
+        `${style} style, ${f}${charDesc?`, ${charDesc}`:""}${gradeStr}, photorealistic, cinematic`
+      );
+
+      // Pad if Claude returned fewer frames than needed
+      while(frameprompts.length < numFrames){
+        const idx = frameprompts.length % Math.max(scriptLines.length, 1);
+        frameprompts.push(`${style} style, ${scriptLines[idx]||finalPrompt}${gradeStr}, cinematic, photorealistic`);
+      }
+      frameprompts = frameprompts.slice(0, numFrames);
+
     } catch {
-      if(isScript){
-        const fps2 = Math.ceil(numFrames/scriptScenes.length);
-        frameprompts = [];
-        scriptScenes.forEach((s,si)=>{
-          for(let f=0;f<fps2&&frameprompts.length<numFrames;f++){
-            frameprompts.push(`${style} style, ${s.text}, shot ${f+1}, cinematic, photorealistic`);
-          }
-        });
-        narrationScript = scriptScenes.map(s=>s.text).join(". ");
-      } else {
-        frameprompts = Array.from({length:numFrames},(_,i)=>`${style} style, ${finalPrompt}, shot ${i+1} of ${numFrames}, cinematic`);
-        narrationScript = finalPrompt;
-      }
+      // Fallback: create image prompts directly from script lines
+      frameprompts = scriptLines.map(line=>
+        `${style} style, ${line}${gradeStr}, cinematic lighting, photorealistic, high quality`
+      );
+      narrationScript = scriptLines.join(". ");
     }
 
-    // Step 2 — Generate all frames
-    setProgress(12); setStatusMsg(`Generating ${numFrames} AI frames...`);
-    const gradeMap: Record<string,string> = {
-      warm:"warm golden hour, amber tones",cool:"cold blue tones, icy",
-      noir:"black and white, film noir",teal:"teal and orange, blockbuster",
-      vintage:"vintage film grain, retro",neon:"neon lights, cyberpunk",
-      pastel:"soft pastel, dreamy",emerald:"lush green, emerald",moody:"dark moody, dramatic shadows",
-    };
-    const gradeStr = colorGrade!=="none"?`, ${gradeMap[colorGrade]||""}` : "";
+    // ── STEP 3: Generate one unique image per script line ─────────
+    setProgress(10); setStatusMsg(`Generating ${numFrames} images (1 per script line)...`);
+
     const seed = Math.floor(Math.random()*99999);
     const frameImages: HTMLImageElement[] = [];
 
-    for(let i=0;i<frameprompts.length;i++){
-      setProgress(Math.round(12+(i/frameprompts.length)*48));
-      setStatusMsg(`Generating frame ${i+1} of ${numFrames}...`);
-      const ep = encodeURIComponent(`${frameprompts[i]}${gradeStr}, photorealistic, 8k, no text, no watermark`);
+    for(let i=0; i<frameprompts.length; i++){
+      setProgress(Math.round(10+(i/frameprompts.length)*50));
+      setStatusMsg(`Generating image ${i+1} of ${numFrames}: "${scriptLines[i]?.slice(0,40)}..."`);
+
+      const ep = encodeURIComponent(
+        `${frameprompts[i]}${gradeStr}, photorealistic, 8k, no text, no watermark, no logo`
+      );
       const url = `https://image.pollinations.ai/prompt/${ep}?width=${W}&height=${H}&seed=${seed+i}&nologo=true&enhance=true&model=flux`;
+
       await new Promise<void>(resolve=>{
         const img = new Image();
         img.crossOrigin = "anonymous";
-        img.onload = ()=>{frameImages.push(img); resolve();};
-        img.onerror = ()=>{if(frameImages.length>0)frameImages.push(frameImages[frameImages.length-1]); resolve();};
-        setTimeout(()=>resolve(), 20000);
+        img.onload = ()=>{ frameImages.push(img); resolve(); };
+        img.onerror = ()=>{ if(frameImages.length>0) frameImages.push(frameImages[frameImages.length-1]); resolve(); };
+        setTimeout(()=>resolve(), 25000);
         img.src = url;
       });
     }
-    if(frameImages.length===0) throw new Error("Could not generate frames. Check internet.");
 
-    // Step 3 — Setup Audio Context with MUSIC + VOICE together
-    setProgress(62); setStatusMsg("Setting up audio...");
+    if(frameImages.length===0) throw new Error("Could not generate images. Check internet connection.");
 
+    // ── STEP 4: Setup Canvas + Recorder FIRST, then start audio ───
+    setProgress(62); setStatusMsg("Setting up video recorder...");
+
+    const canvas = document.createElement("canvas");
+    canvas.width = W; canvas.height = H;
+    const ctx2d = canvas.getContext("2d")!;
+
+    // Draw first frame immediately so canvas is not blank
+    ctx2d.drawImage(frameImages[0], 0, 0, W, H);
+
+    // Setup Audio Context
     const audioCtx = new (window.AudioContext||(window as any).webkitAudioContext)();
     const audioDest = audioCtx.createMediaStreamDestination();
-    const musicNodes: any[] = [];
 
-    // Music layer
-    if(music!=="none"){
+    // Create canvas stream and add audio track to it
+    const canvasStream = canvas.captureStream(FPS);
+    audioDest.stream.getAudioTracks().forEach(t => canvasStream.addTrack(t));
+
+    // Choose best supported format with audio
+    const mimeType = MediaRecorder.isTypeSupported("video/webm;codecs=vp9,opus")
+      ? "video/webm;codecs=vp9,opus"
+      : MediaRecorder.isTypeSupported("video/webm;codecs=vp8,opus")
+      ? "video/webm;codecs=vp8,opus"
+      : MediaRecorder.isTypeSupported("video/webm")
+      ? "video/webm"
+      : "";
+
+    if(!mimeType) throw new Error("Your browser does not support video recording. Please use Chrome.");
+
+    const chunks: Blob[] = [];
+    const recorder = new MediaRecorder(canvasStream, {
+      mimeType,
+      videoBitsPerSecond: 4000000,
+      audioBitsPerSecond: 128000
+    });
+    recorder.ondataavailable = e => { if(e.data.size > 0) chunks.push(e.data); };
+
+    // ── STEP 5: Start recorder FIRST, then schedule audio ─────────
+    setProgress(65); setStatusMsg("Recording video with audio...");
+
+    recorder.start(100); // collect data every 100ms
+
+    // NOW schedule audio AFTER recorder has started
+    // This ensures audio is captured from the very beginning
+    const recordingStartTime = audioCtx.currentTime + 0.1; // tiny delay for recorder to initialize
+
+    // ── MUSIC LAYER ──────────────────────────────────────────────
+    if(music !== "none"){
       const cfg = MUSIC_CONFIGS[music];
       if(cfg){
         const masterGain = audioCtx.createGain();
-        masterGain.gain.setValueAtTime(0.15, audioCtx.currentTime);
+        masterGain.gain.setValueAtTime(0, recordingStartTime);
+        masterGain.gain.linearRampToValueAtTime(0.15, recordingStartTime + 0.5); // fade in
         masterGain.connect(audioDest);
 
+        // Main melody oscillator
         const osc1 = audioCtx.createOscillator();
         const g1 = audioCtx.createGain();
         const filter = audioCtx.createBiquadFilter();
-        osc1.type = cfg.type; osc1.frequency.value = cfg.freq;
-        filter.type = "lowpass"; filter.frequency.value = 1500;
+        osc1.type = cfg.type;
+        osc1.frequency.setValueAtTime(cfg.freq, recordingStartTime);
+        filter.type = "lowpass"; filter.frequency.value = 1000;
         g1.gain.value = 0.5;
         osc1.connect(filter); filter.connect(g1); g1.connect(masterGain);
-        osc1.start(); musicNodes.push(osc1);
 
+        // Harmonic oscillator
         const osc2 = audioCtx.createOscillator();
         const g2 = audioCtx.createGain();
         osc2.type = "sine"; osc2.frequency.value = cfg.freq * 1.5;
         g2.gain.value = 0.2;
         osc2.connect(g2); g2.connect(masterGain);
-        osc2.start(); musicNodes.push(osc2);
 
+        // Bass oscillator
         const osc3 = audioCtx.createOscillator();
         const g3 = audioCtx.createGain();
         osc3.type = "triangle"; osc3.frequency.value = cfg.freq * 0.5;
         g3.gain.value = 0.3;
         osc3.connect(g3); g3.connect(masterGain);
-        osc3.start(); musicNodes.push(osc3);
+
+        // Rhythm LFO
+        const lfo = audioCtx.createOscillator();
+        const lfoGain = audioCtx.createGain();
+        lfo.frequency.value = cfg.tempo;
+        lfoGain.gain.value = 0.05;
+        lfo.connect(lfoGain); lfoGain.connect(masterGain.gain);
+
+        osc1.start(recordingStartTime); osc2.start(recordingStartTime);
+        osc3.start(recordingStartTime); lfo.start(recordingStartTime);
       }
     }
 
-    // Voice layer — synthesize narration as audio tones timed to speech
-    if(voice!=="none"){
-      const voiceObj = VOICES.find(v=>v.id===voice);
+    // ── VOICE LAYER ──────────────────────────────────────────────
+    if(voice !== "none"){
+      const voiceObj = VOICES.find(v => v.id === voice);
       if(voiceObj){
-        const words = narrationScript.split(" ").filter(Boolean);
-        const totalDuration = (frameImages.length * (HOLD+FADE)) / FPS;
-        const wordDuration = totalDuration / Math.max(words.length, 1);
         const voiceGain = audioCtx.createGain();
-        voiceGain.gain.value = voiceObj.volume * 0.4;
+        voiceGain.gain.setValueAtTime(voiceObj.volume * 0.5, recordingStartTime);
         voiceGain.connect(audioDest);
 
-        // Synthesize voice as formant-like tones (phoneme simulation)
-        words.forEach((word, wi)=>{
-          const startTime = audioCtx.currentTime + wi * wordDuration;
-          const dur = wordDuration * 0.85;
+        const baseFreq = voiceObj.pitch * 130;
+        const totalLines = scriptLines.length;
 
-          // Main formant (pitch of voice)
-          const baseFreq = voiceObj.pitch * 120; // Convert pitch ratio to Hz
-          const formant1 = audioCtx.createOscillator();
-          const formant2 = audioCtx.createOscillator();
-          const envGain = audioCtx.createGain();
+        scriptLines.forEach((line, li) => {
+          // When does this line start playing
+          const lineStartOffset = li * ((HOLD_PER_LINE + FADE) / FPS);
+          const lineStart = recordingStartTime + lineStartOffset;
+          const lineDur = (HOLD_PER_LINE / FPS) * 0.88;
+          const words = line.split(" ").filter(Boolean);
+          const wordDur = lineDur / Math.max(words.length, 1);
 
-          formant1.type = "sawtooth";
-          formant1.frequency.value = baseFreq;
-          // Vary pitch slightly per character for natural feel
-          formant1.frequency.setValueAtTime(baseFreq * (0.9 + Math.random()*0.2), startTime);
-          formant1.frequency.linearRampToValueAtTime(baseFreq * (0.95 + Math.random()*0.1), startTime + dur);
+          words.forEach((word, wi) => {
+            const t = lineStart + wi * wordDur;
+            const d = Math.max(wordDur * 0.75, 0.08);
 
-          formant2.type = "sine";
-          formant2.frequency.value = baseFreq * 2.5;
+            // Primary formant (voice character)
+            const f1 = audioCtx.createOscillator();
+            const f2 = audioCtx.createOscillator();
+            const env = audioCtx.createGain();
+            const bandpass = audioCtx.createBiquadFilter();
 
-          // Envelope: attack, sustain, release
-          envGain.gain.setValueAtTime(0, startTime);
-          envGain.gain.linearRampToValueAtTime(0.6, startTime + dur * 0.1);
-          envGain.gain.setValueAtTime(0.5, startTime + dur * 0.8);
-          envGain.gain.linearRampToValueAtTime(0, startTime + dur);
+            f1.type = "sawtooth";
+            // Natural pitch variation per word
+            const pitchVariation = 0.92 + (wi % 5) * 0.04;
+            f1.frequency.setValueAtTime(baseFreq * pitchVariation, t);
+            f1.frequency.linearRampToValueAtTime(baseFreq * (pitchVariation + 0.02), t + d * 0.5);
+            f1.frequency.linearRampToValueAtTime(baseFreq * pitchVariation, t + d);
 
-          // Filter to shape voice character
-          const filter = audioCtx.createBiquadFilter();
-          filter.type = "bandpass";
-          filter.frequency.value = baseFreq * 3;
-          filter.Q.value = voiceObj.rate * 2;
+            f2.type = "triangle";
+            f2.frequency.value = baseFreq * 2.2;
 
-          formant1.connect(filter);
-          formant2.connect(filter);
-          filter.connect(envGain);
-          envGain.connect(voiceGain);
+            // Bandpass filter shapes the voice tone
+            bandpass.type = "bandpass";
+            bandpass.frequency.value = baseFreq * 3.5;
+            bandpass.Q.value = voiceObj.rate * 1.5;
 
-          formant1.start(startTime); formant1.stop(startTime + dur);
-          formant2.start(startTime); formant2.stop(startTime + dur);
+            // Smooth envelope: attack → sustain → release
+            env.gain.setValueAtTime(0, t);
+            env.gain.linearRampToValueAtTime(0.7, t + Math.min(d * 0.12, 0.05));
+            env.gain.setValueAtTime(0.65, t + d * 0.75);
+            env.gain.linearRampToValueAtTime(0, t + d);
+
+            f1.connect(bandpass); f2.connect(bandpass);
+            bandpass.connect(env); env.connect(voiceGain);
+            f1.start(t); f1.stop(t + d + 0.01);
+            f2.start(t); f2.stop(t + d + 0.01);
+          });
         });
       }
     }
 
-    // Step 4 — Record video frames
-    setProgress(65); setStatusMsg("Recording video...");
-    const canvas = document.createElement("canvas");
-    canvas.width = W; canvas.height = H;
-    const ctx2d = canvas.getContext("2d")!;
-
-    const canvasStream = canvas.captureStream(FPS);
-    const audioTracks = audioDest.stream.getAudioTracks();
-    audioTracks.forEach(t=>canvasStream.addTrack(t));
-
-    const mimeType = MediaRecorder.isTypeSupported("video/webm;codecs=vp9,opus")
-      ? "video/webm;codecs=vp9,opus"
-      : MediaRecorder.isTypeSupported("video/webm;codecs=vp8,opus")
-      ? "video/webm;codecs=vp8,opus"
-      : "video/webm";
-
-    const chunks: Blob[] = [];
-    const recorder = new MediaRecorder(canvasStream, {mimeType, videoBitsPerSecond:4000000});
-    recorder.ondataavailable = e=>{if(e.data.size>0) chunks.push(e.data);};
-
-    // Build caption text per frame
-    const allWords = narrationScript.split(" ").filter(Boolean);
-    const wordsPerFrame = Math.max(1, Math.ceil(allWords.length/frameImages.length));
-
-    await new Promise<void>(resolve=>{
-      recorder.onstop = ()=>resolve();
-      recorder.start(100);
+    // ── STEP 6: Render frames to canvas ──────────────────────────
+    await new Promise<void>(resolve => {
+      recorder.onstop = () => resolve();
 
       let frameIdx = 0;
       let subFrame = 0;
-      const totalSteps = HOLD + FADE;
 
       const interval = setInterval(()=>{
         if(frameIdx>=frameImages.length){
           clearInterval(interval);
-          musicNodes.forEach(n=>{try{n.stop();}catch{}});
-          try{audioCtx.close();}catch{}
+          try{ audioCtx.close(); }catch{}
           recorder.stop();
           return;
         }
 
         const cur = frameImages[frameIdx];
-        const nxt = frameImages[Math.min(frameIdx+1,frameImages.length-1)];
-
+        const nxt = frameImages[Math.min(frameIdx+1, frameImages.length-1)];
         ctx2d.clearRect(0,0,W,H);
 
-        if(subFrame<HOLD){
-          // Ken Burns zoom
-          const zoom = 1 + (subFrame/HOLD)*0.05;
+        // Ken Burns zoom effect while image is held
+        if(subFrame < HOLD_PER_LINE){
+          const zoom = 1 + (subFrame/HOLD_PER_LINE)*0.05;
           const ox = (W*(zoom-1))/2;
           const oy = (H*(zoom-1))/2;
           ctx2d.globalAlpha = 1;
-          ctx2d.drawImage(cur,-ox,-oy,W*zoom,H*zoom);
+          ctx2d.drawImage(cur, -ox, -oy, W*zoom, H*zoom);
         } else {
-          // Crossfade
-          const t = (subFrame-HOLD)/FADE;
+          // Crossfade to next image
+          const t = (subFrame-HOLD_PER_LINE)/FADE;
           ctx2d.globalAlpha = 1; ctx2d.drawImage(cur,0,0,W,H);
-          ctx2d.globalAlpha = t; ctx2d.drawImage(nxt,0,0,W,H);
+          ctx2d.globalAlpha = Math.min(t,1); ctx2d.drawImage(nxt,0,0,W,H);
           ctx2d.globalAlpha = 1;
         }
 
-        // Captions
+        // Caption — show the EXACT script line for this image
         if(captionFont!=="none"){
           const cf = CAPTION_FONTS.find(c=>c.id===captionFont);
           if(cf){
-            const caption = allWords.slice(frameIdx*wordsPerFrame,(frameIdx+1)*wordsPerFrame).join(" ");
-            if(caption.trim()){
-              const fs = Math.round(H*0.045);
+            const line = scriptLines[frameIdx]||"";
+            if(line.trim()){
+              const fs = Math.max(Math.round(H*0.042), 16);
               ctx2d.save();
-              // Caption background
-              const bgH = Math.round(H*0.13);
-              ctx2d.fillStyle = "rgba(0,0,0,0.7)";
-              ctx2d.fillRect(0,H-bgH,W,bgH);
-              // Caption text
+              const bgH = Math.round(H*0.15);
+              ctx2d.fillStyle = "rgba(0,0,0,0.72)";
+              ctx2d.fillRect(0, H-bgH, W, bgH);
               ctx2d.font = `bold ${fs}px ${cf.font}`;
               ctx2d.fillStyle = "#ffffff";
               ctx2d.textAlign = "center";
@@ -864,45 +967,53 @@ Return ONLY this JSON (no markdown):
               ctx2d.shadowColor = "black";
               ctx2d.shadowBlur = 8;
               // Word wrap
-              const maxW = W * 0.9;
-              const words2 = caption.split(" ");
-              let line = "";
-              const lines: string[] = [];
-              words2.forEach(w=>{
-                const test = line ? `${line} ${w}` : w;
-                if(ctx2d.measureText(test).width>maxW){lines.push(line);line=w;}
-                else{line=test;}
+              const maxW = W*0.9;
+              const words = line.split(" ");
+              let curLine = "";
+              const lines2: string[] = [];
+              words.forEach(w=>{
+                const test = curLine ? `${curLine} ${w}` : w;
+                if(ctx2d.measureText(test).width>maxW){ lines2.push(curLine); curLine=w; }
+                else curLine=test;
               });
-              lines.push(line);
-              const lineH = fs * 1.3;
-              const startY = H - bgH/2 - ((lines.length-1)*lineH)/2;
-              lines.forEach((l,li)=>ctx2d.fillText(l,W/2,startY+li*lineH));
+              lines2.push(curLine);
+              const lineH = fs*1.35;
+              const startY = H - bgH/2 - ((lines2.length-1)*lineH)/2;
+              lines2.forEach((l,li)=>ctx2d.fillText(l, W/2, startY+li*lineH));
               ctx2d.restore();
             }
           }
         }
 
+        // Frame number overlay (small, bottom right)
+        ctx2d.save();
+        ctx2d.fillStyle = "rgba(255,255,255,0.4)";
+        ctx2d.font = `${Math.round(H*0.02)}px sans-serif`;
+        ctx2d.textAlign = "right";
+        ctx2d.fillText(`${frameIdx+1}/${frameImages.length}`, W-8, H-6);
+        ctx2d.restore();
+
         subFrame++;
-        if(subFrame>=totalSteps){subFrame=0;frameIdx++;}
+        if(subFrame >= HOLD_PER_LINE+FADE){ subFrame=0; frameIdx++; }
+
         const pct = Math.round(65+(frameIdx/frameImages.length)*25);
         setProgress(Math.min(pct,90));
-        setStatusMsg(`Encoding frame ${Math.min(frameIdx+1,frameImages.length)}/${frameImages.length}...`);
+        setStatusMsg(`Encoding image ${Math.min(frameIdx+1,frameImages.length)} of ${frameImages.length}...`);
       }, 1000/FPS);
     });
 
-    // Step 5 — Finalize
-    setProgress(92); setStatusMsg("Finalizing video file...");
+    // ── STEP 7: Finalize ──────────────────────────────────────────
+    setProgress(92); setStatusMsg("Finalizing video...");
     const blob = new Blob(chunks,{type:mimeType});
     const localUrl = URL.createObjectURL(blob);
     setVideoUrl(localUrl); setVideoBlob(blob);
 
-    // Upload to Supabase
     setProgress(96); setStatusMsg("Saving to cloud...");
     try{
       const fileName = `${user.id}/${recordId||Date.now()}.webm`;
-      const {error:uploadErr}=await supabase.storage.from("videos").upload(fileName,blob,{contentType:mimeType,upsert:true});
+      const {error:uploadErr} = await supabase.storage.from("videos").upload(fileName,blob,{contentType:mimeType,upsert:true});
       if(!uploadErr){
-        const {data:{publicUrl}}=supabase.storage.from("videos").getPublicUrl(fileName);
+        const {data:{publicUrl}} = supabase.storage.from("videos").getPublicUrl(fileName);
         if(recordId) await supabase.from("videos").update({status:"done",video_url:publicUrl}).eq("id",recordId);
       } else {
         if(recordId) await supabase.from("videos").update({status:"done",video_url:localUrl}).eq("id",recordId);
@@ -914,7 +1025,7 @@ Return ONLY this JSON (no markdown):
     setProgress(100);
     setNotifs(n=>[{id:Date.now(),type:"success",icon:"ok",
       title:"Video ready!",
-      msg:`Your ${style} video${voice!=="none"?` with ${VOICES.find(v=>v.id===voice)?.label} voice`:""}${music!=="none"?` and ${music} music`:""} is ready!`,
+      msg:`Generated ${numFrames} images covering your full script (${duration}).`,
       time:"just now",read:false},...n].slice(0,10));
     loadHistory();
     setPhase("done");
