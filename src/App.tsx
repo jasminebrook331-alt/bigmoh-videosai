@@ -11,8 +11,8 @@ const RATIOS = ["16:9","9:16","1:1"];
 const DURATIONS = ["30s","1 min","2 min","5 min","10 min"];
 const VOICES = [
   {id:"none",   label:"None",        icon:"🔇", desc:"No voiceover",        pitch:1,   rate:1,    volume:1,   previewText:"No voice selected."},
-  {id:"deep-m", label:"Deep Male",   icon:"🎙️", desc:"Bold, authoritative", pitch:0.5, rate:0.85, volume:1,   previewText:"Hello, I am a deep authoritative narrator."},
-  {id:"warm-f", label:"Warm Female", icon:"🎙️", desc:"Warm, clear female",  pitch:1.4, rate:0.95, volume:1,   previewText:"Hi there, welcome to this story."},
+  {id:"deep-m", label:"Deep Male",   icon:"🎙️", desc:"Bold, authoritative", pitch:0.5, rate:0.85, volume:1,   previewText:"Hello moh, I am your deep authoritative narrator."},
+  {id:"warm-f", label:"Warm Female", icon:"🎙️", desc:"Warm, clear female",  pitch:1.4, rate:0.95, volume:1,   previewText:"Hi moh, welcome to this story."},
   {id:"doc",    label:"Documentary", icon:"📽️", desc:"Calm, informative",   pitch:0.8, rate:0.88, volume:0.9, previewText:"In this remarkable journey, we discover something extraordinary."},
   {id:"drama",  label:"Dramatic",    icon:"🎭", desc:"Intense & emotional",  pitch:0.7, rate:0.78, volume:1,   previewText:"The fate of the world hung in the balance..."},
   {id:"whisper",label:"Whispering",  icon:"🤫", desc:"Soft, intimate",       pitch:1.1, rate:0.7,  volume:0.5, previewText:"Listen closely, I have something important to tell you..."},
